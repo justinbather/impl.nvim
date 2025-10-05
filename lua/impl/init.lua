@@ -8,7 +8,6 @@ local function get_client(bufnr)
 	return clients[1]
 end
 
--- Ask gopls which interfaces a struct implements
 function M.get_implemented(bufnr, struct_name, callback)
 	local client = get_client(bufnr)
 	if not client then
@@ -17,27 +16,37 @@ function M.get_implemented(bufnr, struct_name, callback)
 		return
 	end
 
-	local params = { textDocument = vim.lsp.util.make_text_document_params() }
+	-- Ask gopls for the type info of the struct
+	local params = {
+		command = "gopls.type",
+		arguments = {
+			{
+				URI = vim.uri_from_bufnr(bufnr),
+				Type = struct_name,
+			},
+		},
+	}
 
-	client.request("textDocument/documentSymbol", params, function(err, result)
-		if err or not result then
+	client.request("workspace/executeCommand", params, function(err, result)
+		if err then
+			vim.notify("impl.nvim: gopls type query failed: " .. err.message, vim.log.levels.ERROR)
 			callback({})
 			return
 		end
 
-		-- Gather methods of this struct
-		local struct_methods = {}
-		for _, symbol in ipairs(result) do
-			if symbol.kind == 23 and symbol.name == struct_name and symbol.children then
-				for _, child in ipairs(symbol.children) do
-					struct_methods[child.name] = true
-				end
-			end
+		if not result or not result.Methods then
+			callback({})
+			return
 		end
 
-		-- Search all workspace interfaces
-		client.request("workspace/symbol", { query = "" }, function(err2, workspace_symbols)
-			if err2 or not workspace_symbols then
+		local struct_methods = {}
+		for _, method in ipairs(result.Methods) do
+			struct_methods[method.Name] = true
+		end
+
+		-- Now get all interfaces
+		client.request("workspace/symbol", { query = "" }, function(err2, symbols)
+			if err2 or not symbols then
 				callback({})
 				return
 			end
@@ -45,22 +54,20 @@ function M.get_implemented(bufnr, struct_name, callback)
 			local interfaces = {}
 			local iface_methods = {}
 
-			-- First, collect interface -> methods
-			for _, symbol in ipairs(workspace_symbols) do
-				if symbol.kind == 11 then
-					iface_methods[symbol.name] = {}
-					table.insert(interfaces, symbol.name)
-				elseif symbol.containerName and iface_methods[symbol.containerName] then
-					iface_methods[symbol.containerName][symbol.name] = true
+			for _, s in ipairs(symbols) do
+				if s.kind == 11 then
+					iface_methods[s.name] = {}
+					table.insert(interfaces, s.name)
+				elseif s.containerName and iface_methods[s.containerName] then
+					iface_methods[s.containerName][s.name] = true
 				end
 			end
 
-			-- Compare struct methods to each interface
 			local implemented = {}
 			for iface, methods in pairs(iface_methods) do
 				local ok = true
-				for mname, _ in pairs(methods) do
-					if not struct_methods[mname] then
+				for name, _ in pairs(methods) do
+					if not struct_methods[name] then
 						ok = false
 						break
 					end
