@@ -31,7 +31,7 @@ function M.refresh()
 			local struct_name = ts.get_node_text(node, bufnr)
 			local row, _, _ = node:start()
 
-			require("imple.gopls").get_implemented(bufnr, struct_name, function(interfaces)
+			require("impl.gopls").get_implemented(bufnr, struct_name, function(interfaces)
 				if interfaces and #interfaces > 0 then
 					local label = table.concat(interfaces, ", ")
 
