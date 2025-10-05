@@ -3,83 +3,74 @@ local M = {}
 local ts = vim.treesitter
 local ns = vim.api.nvim_create_namespace("impl")
 
-local function get_client(bufnr)
-	local clients = vim.lsp.get_clients({ bufnr = bufnr, name = "gopls" })
-	return clients[1]
-end
-
 function M.get_implemented(bufnr, struct_name, callback)
-	local client = get_client(bufnr)
-	if not client then
-		vim.notify("impl.nvim: gopls not running", vim.log.levels.WARN)
-		callback({})
-		return
-	end
+  local filename = vim.api.nvim_buf_get_name(bufnr)
+  if filename == "" then
+    callback({})
+    return
+  end
 
-	-- Ask gopls for the type info of the struct
-	local params = {
-		command = "gopls.type",
-		arguments = {
-			{
-				URI = vim.uri_from_bufnr(bufnr),
-				Type = struct_name,
-			},
-		},
-	}
+  -- Find struct position in file
+  local parser = ts.get_parser(bufnr, "go")
+  local tree = parser:parse()[1]
+  local root = tree:root()
 
-	client.request("workspace/executeCommand", params, function(err, result)
-		if err then
-			vim.notify("impl.nvim: gopls type query failed: " .. err.message, vim.log.levels.ERROR)
-			callback({})
-			return
-		end
+  local query = ts.query.parse(
+    "go",
+    [[
+      (type_spec
+        name: (type_identifier) @name
+        type: (struct_type))
+    ]]
+  )
 
-		if not result or not result.Methods then
-			callback({})
-			return
-		end
+  local byte_offset = nil
+  for id, node, _ in query:iter_captures(root, bufnr, 0, -1) do
+    if query.captures[id] == "name" then
+      local name = ts.get_node_text(node, bufnr)
+      if name == struct_name then
+        local row, col = node:start()
+        -- Get byte offset for gopls type query
+        local line = vim.api.nvim_buf_get_lines(bufnr, row, row + 1, false)[1]
+        byte_offset = vim.str_byteindex(line, col)
+        break
+      end
+    end
+  end
 
-		local struct_methods = {}
-		for _, method in ipairs(result.Methods) do
-			struct_methods[method.Name] = true
-		end
+  if not byte_offset then
+    vim.notify("impl.nvim: could not locate struct position", vim.log.levels.WARN)
+    callback({})
+    return
+  end
 
-		-- Now get all interfaces
-		client.request("workspace/symbol", { query = "" }, function(err2, symbols)
-			if err2 or not symbols then
-				callback({})
-				return
-			end
+  local cmd = {
+    "gopls",
+    "type",
+    "-json",
+    string.format("%s:#%d", filename, byte_offset),
+  }
 
-			local interfaces = {}
-			local iface_methods = {}
+  vim.system(cmd, { text = true }, function(res)
+    if res.code ~= 0 or not res.stdout or res.stdout == "" then
+      callback({})
+      return
+    end
 
-			for _, s in ipairs(symbols) do
-				if s.kind == 11 then
-					iface_methods[s.name] = {}
-					table.insert(interfaces, s.name)
-				elseif s.containerName and iface_methods[s.containerName] then
-					iface_methods[s.containerName][s.name] = true
-				end
-			end
+    local ok, data = pcall(vim.json.decode, res.stdout)
+    if not ok or not data or not data.Implements then
+      callback({})
+      return
+    end
 
-			local implemented = {}
-			for iface, methods in pairs(iface_methods) do
-				local ok = true
-				for name, _ in pairs(methods) do
-					if not struct_methods[name] then
-						ok = false
-						break
-					end
-				end
-				if ok and next(methods) ~= nil then
-					table.insert(implemented, iface)
-				end
-			end
+    local interfaces = {}
+    for _, impl in ipairs(data.Implements) do
+      table.insert(interfaces, impl.Name)
+    end
 
-			callback(implemented)
-		end, bufnr)
-	end, bufnr)
+    callback(interfaces)
+  end)
+end
 end
 function M.refresh()
 	vim.notify("impl.nvim: loading interfaces", vim.log.levels.INFO)
