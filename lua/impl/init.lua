@@ -17,48 +17,63 @@ function M.get_implemented(bufnr, struct_name, callback)
 		return
 	end
 
-	-- Find the position of the struct name in the file
-	local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-	local row, col
-	for i, line in ipairs(lines) do
-		local start_col = line:find("struct%s+" .. struct_name)
-		if start_col then
-			row = i - 1
-			col = start_col - 1
-			break
-		end
-	end
+	local params = { textDocument = vim.lsp.util.make_text_document_params() }
 
-	if not row then
-		callback({})
-		return
-	end
-
-	local params = {
-		textDocument = vim.lsp.util.make_text_document_params(bufnr),
-		position = { line = row, character = col },
-	}
-
-	-- This asks gopls for interfaces the struct implements
-	client.request("textDocument/implementation", params, function(err, result)
-		if err or not result or vim.tbl_isempty(result) then
+	client.request("textDocument/documentSymbol", params, function(err, result)
+		if err or not result then
 			callback({})
 			return
 		end
 
-		local interfaces = {}
-		for _, location in ipairs(result) do
-			local fname = vim.uri_to_fname(location.uri)
-			local iface = fname:match("([^/]+)%.go$")
-			if iface then
-				table.insert(interfaces, iface)
+		-- Gather methods of this struct
+		local struct_methods = {}
+		for _, symbol in ipairs(result) do
+			if symbol.kind == 23 and symbol.name == struct_name and symbol.children then
+				for _, child in ipairs(symbol.children) do
+					struct_methods[child.name] = true
+				end
 			end
 		end
 
-		callback(interfaces)
+		-- Search all workspace interfaces
+		client.request("workspace/symbol", { query = "" }, function(err2, workspace_symbols)
+			if err2 or not workspace_symbols then
+				callback({})
+				return
+			end
+
+			local interfaces = {}
+			local iface_methods = {}
+
+			-- First, collect interface -> methods
+			for _, symbol in ipairs(workspace_symbols) do
+				if symbol.kind == 11 then
+					iface_methods[symbol.name] = {}
+					table.insert(interfaces, symbol.name)
+				elseif symbol.containerName and iface_methods[symbol.containerName] then
+					iface_methods[symbol.containerName][symbol.name] = true
+				end
+			end
+
+			-- Compare struct methods to each interface
+			local implemented = {}
+			for iface, methods in pairs(iface_methods) do
+				local ok = true
+				for mname, _ in pairs(methods) do
+					if not struct_methods[mname] then
+						ok = false
+						break
+					end
+				end
+				if ok and next(methods) ~= nil then
+					table.insert(implemented, iface)
+				end
+			end
+
+			callback(implemented)
+		end, bufnr)
 	end, bufnr)
 end
-
 function M.refresh()
 	vim.notify("impl.nvim: loading interfaces", vim.log.levels.INFO)
 	local bufnr = vim.api.nvim_get_current_buf()
