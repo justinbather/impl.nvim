@@ -60,6 +60,7 @@ function M.get_implemented(bufnr, struct_name, callback)
 end
 
 function M.refresh()
+	vim.notify("impl.nvim: loading interfaces", vim.log.levels.INFO)
 	local bufnr = vim.api.nvim_get_current_buf()
 	if vim.bo[bufnr].filetype ~= "go" then
 		return
@@ -108,6 +109,7 @@ function M.setup()
 		callback = function(args)
 			local client = vim.lsp.get_client_by_id(args.data.client_id)
 			if client and client.name == "gopls" then
+				vim.notify("impl.nvim: gopls loaded", vim.log.levels.INFO)
 				vim.defer_fn(M.refresh, 500)
 			end
 		end,
