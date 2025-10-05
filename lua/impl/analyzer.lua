@@ -28,14 +28,19 @@ function M.refresh()
 	for id, node, _ in query:iter_captures(root, bufnr, 0, -1) do
 		local name = query.captures[id]
 		if name == "name" then
+			local struct_name = ts.get_node_text(node, bufnr)
 			local row, _, _ = node:start()
-			-- TODO: query ts for textDocument/typeDefinition
-			local implements = "implements: io.Reader"
 
-			vim.api.nvim_buf_set_extmark(bufnr, ns, row, 0, {
-				virt_text = { { " -- " .. implements, "Comment" } },
-				virt_text_pos = "eol",
-			})
+			require("imple.gopls").get_implemented(bufnr, struct_name, function(interfaces)
+				if interfaces and #interfaces > 0 then
+					local label = table.concat(interfaces, ", ")
+
+					vim.api.nvim_buf_set_extmark(bufnr, ns, row, 0, {
+						virt_text = { { " -- " .. label, "Comment" } },
+						virt_text_pos = "eol",
+					})
+				end
+			end)
 		end
 	end
 end
